@@ -1,0 +1,434 @@
+* { box-sizing: border-box; }
+
+html, body, #root {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  background: #fff;
+  color: #111;
+}
+
+.app {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.main {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 32px;
+  text-align: center;
+}
+.main h1 { margin: 0; font-weight: 500; font-size: 2rem; }
+.muted { margin: 0; color: #777; }
+
+.cards {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 16px;
+}
+.card {
+  padding: 12px 18px;
+  border: 1px solid #e5e5e5;
+  border-radius: 10px;
+  background: #fafafa;
+}
+
+.tab-bg {
+  position: absolute;
+  will-change: transform;
+}
+
+.sheet {
+  position: absolute;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+  border-radius: 6px;
+  /* The colored frame casts a soft shadow onto the page it surrounds. */
+  box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.18), inset 0 0 0 1px rgba(0, 0, 0, 0.06);
+  transform-origin: 50% 100%;
+}
+
+/* ---- Board: columns of items inside an open tab ---- */
+
+.board {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.columns {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 16px;
+  overflow-x: auto;
+  /* Columns scroll themselves; without this the entrance slide-up briefly
+     overflows and flashes a vertical scrollbar here. */
+  overflow-y: hidden;
+  /* Breathing room so the overflow clip doesn't cut off the columns' shadows. */
+  margin: -4px -6px -8px;
+  padding: 4px 6px 8px;
+}
+
+.column {
+  position: relative; /* anchors the completion drawer */
+  overflow: hidden; /* drawer slides in from below the edge */
+  flex: 1 1 0;
+  min-width: 220px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 18px 18px 0;
+  border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 3px 8px rgba(0, 0, 0, 0.06);
+}
+.column h2 {
+  margin: 0 0 14px;
+  font-size: 1.5rem;
+  font-weight: 500;
+}
+
+.items {
+  position: relative; /* anchor for items popping out during exit */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  /* room for focus outlines, without shifting the content */
+  margin: 0 -4px;
+  padding: 4px 4px 18px;
+}
+
+.item-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.item-wrap {
+  flex-shrink: 0;
+  border-radius: 8px;
+}
+
+/* Where a dragged item will land. */
+.item-slot {
+  flex-shrink: 0;
+  border: 2px dashed var(--accent);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.35);
+  opacity: 0.6;
+}
+
+.item {
+  display: block;
+  width: 100%;
+  min-height: 64px;
+  padding: 14px 16px;
+  border: 0;
+  border-radius: 8px;
+  font: inherit;
+  line-height: 1.4;
+  color: #111;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--item);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08), 0 2px 5px rgba(0, 0, 0, 0.05);
+}
+.item:focus-visible { outline: 2px solid #333; outline-offset: 1px; }
+textarea.item {
+  cursor: text;
+  resize: none;
+  outline-color: var(--accent);
+  field-sizing: content; /* grow with the text where supported */
+  outline: 2px solid;
+  outline-offset: 1px;
+}
+
+.add-item {
+  flex-shrink: 0;
+  height: 56px;
+  border: 3px dashed;
+  border-radius: 10px;
+  background: transparent;
+  font: inherit;
+  font-size: 2rem;
+  font-weight: 300;
+  line-height: 1;
+  color: var(--accent);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.add-item:hover { background: rgba(255, 255, 255, 0.45); }
+
+/* Resting card -> on hover/drag it fills with the tab color, showing a grip and a pencil. */
+.item.card {
+  position: relative;
+  cursor: grab;
+  user-select: none;
+  touch-action: none; /* a touch-drag on a card moves the card, not the page */
+  transition: background 0.15s;
+}
+.item-text { display: block; transition: opacity 0.15s; }
+.grip,
+.edit-btn {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: grid;
+  place-items: center;
+  color: var(--on-accent);
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
+}
+.grip { left: 0; right: 0; pointer-events: none; } /* centred on the whole card; the pencil sits on top */
+.edit-btn {
+  right: 0;
+  width: 52px;
+  border: 0;
+  border-radius: 0 8px 8px 0;
+  background: rgba(0, 0, 0, 0.1);
+  cursor: pointer;
+}
+.edit-btn:hover { background: rgba(0, 0, 0, 0.22); }
+
+.item.card:hover { background: var(--accent); }
+.item.card:hover .item-text { opacity: 0; }
+.item.card:hover .grip,
+.item.card:hover .edit-btn { opacity: 1; }
+/* The floating copy of a dragged card. */
+.drag-clone {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1000;
+  pointer-events: none;
+  border-radius: 8px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.22);
+}
+.drag-clone .item.card { height: 100%; background: var(--accent); }
+.drag-clone .grip { opacity: 1; }
+/* Over the (tab-colored) drawer, flip back to the light card so it stands out. */
+.drag-clone.over-drawer .item.card { background: var(--item); }
+.drag-clone.over-drawer .grip { color: var(--accent); }
+
+body.is-dragging,
+body.is-dragging * { cursor: grabbing !important; user-select: none; }
+/* Don't flash hover styles on cards the dragged copy passes over. */
+body.is-dragging .item.card:hover { background: var(--item); }
+body.is-dragging .item.card:hover .item-text { opacity: 1; }
+body.is-dragging .item.card:hover .grip,
+body.is-dragging .item.card:hover .edit-btn { opacity: 0; }
+.edit-btn:focus-visible { opacity: 1; outline: 2px solid var(--on-accent); outline-offset: -4px; }
+
+/* No hover on touch screens: keep the pencil visible on the resting card. */
+@media (hover: none) {
+  .edit-btn { opacity: 1; background: transparent; color: var(--accent); }
+  .item.card:hover { background: var(--item); }
+  .item.card:hover .item-text { opacity: 1; }
+  .item.card:hover .grip { opacity: 0; }
+}
+
+.drawer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1; /* over the column's cards; the dragged copy floats above everything */
+  height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border-radius: 14px 14px 0 0; /* attached to the column's bottom edge */
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 500;
+  box-shadow: 0 -6px 20px rgba(0, 0, 0, 0.1);
+  transition: filter 0.15s;
+}
+.drawer.over { filter: brightness(1.12) saturate(1.1); }
+
+.board-footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.tab-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  display: flex;
+}
+
+.tab-label {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  font: inherit;
+  font-size: 1.4rem;
+  font-weight: 500;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.tab-label:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: -8px;
+  border-radius: 10px;
+}
+
+.tab-label.plus {
+  font-size: 2rem;
+  font-weight: 300;
+  line-height: 1;
+}
+
+/* ---- Add-tab modal ---- */
+
+.backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  background: rgba(20, 22, 28, 0.35);
+  backdrop-filter: blur(3px);
+}
+
+.modal-wrap {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  pointer-events: none;
+}
+
+.modal {
+  width: min(420px, 100%);
+  overflow: hidden;
+  pointer-events: auto;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.25);
+}
+
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 24px;
+}
+.modal h2 { margin: 0; font-size: 1.3rem; font-weight: 600; }
+
+.field { display: flex; flex-direction: column; gap: 8px; }
+.field > span { font-size: 0.85rem; color: #666; font-weight: 500; }
+.field input:not([type='color']) {
+  font: inherit;
+  font-size: 1rem;
+  padding: 10px 12px;
+  border: 1px solid #ddd;
+  border-radius: 10px;
+  outline: none;
+}
+.field input:not([type='color']):focus { border-color: #999; }
+
+.swatches { display: flex; flex-wrap: wrap; gap: 10px; }
+.swatch {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  cursor: pointer;
+}
+.swatch-ring {
+  position: absolute;
+  inset: -4px;
+  border: 2px solid #222;
+  border-radius: 50%;
+}
+.swatch.custom {
+  background: conic-gradient(red, yellow, lime, cyan, blue, magenta, red);
+}
+.swatch.custom input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.preview {
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px 12px 0 0;
+  font-weight: 500;
+  font-size: 1.1rem;
+  transition: background 0.2s;
+}
+
+.actions { display: flex; justify-content: flex-end; gap: 8px; }
+.btn {
+  font: inherit;
+  font-weight: 500;
+  padding: 10px 16px;
+  border: 0;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.2s, opacity 0.2s;
+}
+.btn:disabled { opacity: 0.4; cursor: default; }
+.btn.ghost { background: #f0f0f0; color: #333; }
+
+.modal.confirm { width: min(380px, 100%); }
+.btn.danger { background: #d62828; color: #fff; }
+.btn.danger-outline {
+  font-size: 0.95rem;
+  background: transparent;
+  color: #b42323;
+  border: 1.5px solid currentColor;
+}
+.btn.danger-outline:hover { background: rgba(214, 40, 40, 0.08); }
+.btn:focus-visible { outline: 2px solid #333; outline-offset: 2px; }
+
+.backup {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-top: 14px;
+  border-top: 1px solid #eee;
+  font-size: 0.85rem;
+}
+.backup > span { color: #999; margin-right: auto; }
+.link {
+  font: inherit;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: #2f6fed;
+  cursor: pointer;
+}
+.link:hover { text-decoration: underline; }
+.error { margin: -8px 0 0; color: #b42323; font-size: 0.85rem; }
