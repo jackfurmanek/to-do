@@ -2,7 +2,7 @@ import { forwardRef, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence, animate, useMotionValue } from 'motion/react'
 import { tint, labelColor } from './colors.js'
-import { makeItem } from './model.js'
+import { makeItem, dueFor, isOverdue } from './model.js'
 
 const spring = { type: 'spring', bounce: 0.18, duration: 0.6 }
 const itemSpring = { type: 'spring', bounce: 0.2, duration: 0.4 }
@@ -24,7 +24,7 @@ const inRect = (el, x, y) => {
 // card lifts into a floating copy (portalled to <body>, so no column clips it), an
 // empty slot marks where it will land, and Motion's layout animations slide the other
 // cards aside. Dropping on the drawer at the bottom of a column completes the item.
-export default function Board({ tab, onUpdateColumns, onDelete }) {
+export default function Board({ tab, today, onUpdateColumns, onDelete }) {
   // The item just created with "+", which should open straight into editing.
   const [newItemId, setNewItemId] = useState(null)
   // While dragging: { item, fromCol, fromIndex, overCol, index, overDrawer, w, h, dropping }
@@ -52,9 +52,9 @@ export default function Board({ tab, onUpdateColumns, onDelete }) {
   const updateItems = (columnId, fn) =>
     onUpdateColumns((cols) => cols.map((c) => (c.id === columnId ? { ...c, items: fn(c.items) } : c)))
 
-  const addItem = (columnId) => {
-    const item = makeItem()
-    updateItems(columnId, (items) => [...items, item])
+  const addItem = (col) => {
+    const item = makeItem('', dueFor(col.kind, today))
+    updateItems(col.id, (items) => [...items, item])
     setNewItemId(item.id)
   }
 
@@ -193,9 +193,12 @@ export default function Board({ tab, onUpdateColumns, onDelete }) {
         await Promise.all([animate(cloneX, left, dropSpring), animate(cloneY, top, dropSpring)])
       }
       onUpdateColumns((cols) => {
+        // Changing columns re-dates the item for its new home; reordering keeps its date.
+        const kind = cols.find((c) => c.id === target.overCol)?.kind ?? null
+        const moved = target.overCol === d.fromCol ? d.item : { ...d.item, due: dueFor(kind, today) }
         const without = cols.map((c) => (c.id === d.fromCol ? { ...c, items: c.items.filter((i) => i.id !== d.item.id) } : c))
         return without.map((c) =>
-          c.id === target.overCol ? { ...c, items: [...c.items.slice(0, target.index), d.item, ...c.items.slice(target.index)] } : c,
+          c.id === target.overCol ? { ...c, items: [...c.items.slice(0, target.index), moved, ...c.items.slice(target.index)] } : c,
         )
       })
       setLandedId(d.item.id)
@@ -214,6 +217,7 @@ export default function Board({ tab, onUpdateColumns, onDelete }) {
               key={item.id}
               item={item}
               landed={item.id === landedId}
+              overdue={isOverdue(item, today)}
               autoEdit={item.id === newItemId}
               onPress={(e) => pressCard(e, item, col.id)}
               onSave={(text) => updateItems(col.id, (its) => its.map((it) => (it.id === item.id ? { ...it, text } : it)))}
@@ -260,7 +264,7 @@ export default function Board({ tab, onUpdateColumns, onDelete }) {
                   transition={itemSpring}
                   className="add-item"
                   aria-label={`Add item to ${col.title}`}
-                  onClick={() => addItem(col.id)}
+                  onClick={() => addItem(col)}
                 >
                   +
                 </motion.button>
@@ -320,7 +324,7 @@ export default function Board({ tab, onUpdateColumns, onDelete }) {
 
 // Hover shows the drag grip and a pencil to edit; double-click or Enter also edits.
 // While editing: Enter saves, Shift+Enter adds a line, Esc cancels; saving empty removes it.
-const ItemCard = forwardRef(function ItemCard({ item, landed, autoEdit, onPress, onSave, onRemove, onEditEnd }, ref) {
+const ItemCard = forwardRef(function ItemCard({ item, landed, overdue, autoEdit, onPress, onSave, onRemove, onEditEnd }, ref) {
   const [editing, setEditing] = useState(autoEdit)
   const [draft, setDraft] = useState(item.text)
   const inputRef = useRef(null)
@@ -413,6 +417,11 @@ const ItemCard = forwardRef(function ItemCard({ item, landed, autoEdit, onPress,
           }}
         >
           <span className="item-text">{item.text}</span>
+          {overdue && (
+            <span className="overdue" title={`Overdue (was due ${item.due})`} aria-label="Overdue">
+              !
+            </span>
+          )}
           <span className="grip" aria-hidden="true">
             <GripIcon />
           </span>

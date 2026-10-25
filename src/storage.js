@@ -1,12 +1,14 @@
 // Persistence for the app's data. Everything is stored under one key as
 // { version, tabs }, so future shape changes can be migrated instead of breaking.
 
-import { defaultColumns } from './model.js'
+import { defaultColumns, dueFor, todayKey, localTimestamp } from './model.js'
 
 export const STORAGE_KEY = 'todo-tabs'
-export const VERSION = 2
+export const VERSION = 3
 
 const HEX = /^#[0-9a-f]{6}$/i
+const DATE = /^\d{4}-\d{2}-\d{2}$/
+const KINDS = ['today', 'tomorrow']
 
 // Upgrades older saves/backups one version at a time.
 const MIGRATIONS = {
@@ -19,6 +21,27 @@ const MIGRATIONS = {
       return { ...rest, columns: defaultColumns() }
     }),
   }),
+  // v2 columns had no `kind` and items no `due`: infer the kind from the default
+  // titles, and date what's already in Today/Tomorrow as of the upgrade.
+  2: (data) => {
+    const today = todayKey()
+    return {
+      version: 3,
+      tabs: data.tabs.map((t) =>
+        t && Array.isArray(t.columns)
+          ? {
+              ...t,
+              columns: t.columns.map((c) => {
+                if (!c || !Array.isArray(c.items)) return c
+                const title = typeof c.title === 'string' ? c.title.trim().toLowerCase() : ''
+                const kind = KINDS.includes(title) ? title : null
+                return { ...c, kind, items: c.items.map((it) => (it && typeof it === 'object' ? { ...it, due: dueFor(kind, today) } : it)) }
+              }),
+            }
+          : t,
+      ),
+    }
+  },
 }
 
 const isStr = (v) => typeof v === 'string'
@@ -41,9 +64,10 @@ export function parseData(data) {
       for (const it of c.items) {
         if (!it || !fresh(it.id) || !isStr(it.text)) return null
         // A blank item is one still being typed when the page closed; drop it.
-        if (it.text.trim()) items.push({ id: it.id, text: it.text })
+        const due = isStr(it.due) && DATE.test(it.due) ? it.due : null
+        if (it.text.trim()) items.push({ id: it.id, text: it.text, due })
       }
-      columns.push({ id: c.id, title: c.title, items })
+      columns.push({ id: c.id, title: c.title, kind: KINDS.includes(c.kind) ? c.kind : null, items })
     }
     tabs.push({ id: t.id, title: t.title, color: t.color, columns })
   }
@@ -87,8 +111,8 @@ export class WriteBlockedError extends Error {}
 
 // Resolves true once the file is written, false if the user cancelled the save dialog.
 export async function exportTabs(tabs) {
-  const json = JSON.stringify({ version: VERSION, exportedAt: new Date().toISOString(), tabs }, null, 2)
-  const filename = `todo-tabs-${new Date().toISOString().slice(0, 10)}.json`
+  const json = JSON.stringify({ version: VERSION, exportedAt: localTimestamp(), tabs }, null, 2)
+  const filename = `todo-tabs-${todayKey()}.json`
 
   // Chromium browsers: a real save dialog we can await.
   if ('showSaveFilePicker' in window && !pickerWriteBlocked) {

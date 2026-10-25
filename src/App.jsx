@@ -1,14 +1,16 @@
-import { useEffect, useRef, useState } from 'react'
-import { motion, AnimatePresence, MotionConfig } from 'motion/react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { motion, AnimatePresence, MotionConfig, animate, useMotionValue } from 'motion/react'
 import Board from './Board.jsx'
+import Home from './Home.jsx'
 import { tint, labelColor } from './colors.js'
-import { defaultColumns, makeItem } from './model.js'
+import { defaultColumns, makeItem, dueFor, rollOver, todayKey } from './model.js'
 import { STORAGE_KEY, loadTabs, saveTabs, parseData, exportTabs, readImportFile, WriteBlockedError } from './storage.js'
 
 // Demo data for the very first run.
 function initialTabs() {
+  const today = todayKey()
   const withItems = (lists) =>
-    defaultColumns().map((col, i) => ({ ...col, items: (lists[i] ?? []).map((t) => makeItem(t)) }))
+    defaultColumns().map((col, i) => ({ ...col, items: (lists[i] ?? []).map((t) => makeItem(t, dueFor(col.kind, today))) }))
   return [
     { id: 'inbox', title: 'Inbox', color: '#e5383b', columns: withItems([['Buy milk', 'Water the plants'], ['Reply to emails'], ['Book dentist']]) },
     { id: 'work', title: 'Work', color: '#2bb24c', columns: withItems([]) },
@@ -34,13 +36,17 @@ const hoverSpring = { type: 'spring', bounce: 0.3, duration: 0.35 }
 
 export default function App() {
   // Demo tabs only on the very first run; after that the save is the source of truth.
-  const [tabs, setTabs] = useState(() => loadTabs() ?? initialTabs())
+  const [tabs, setTabs] = useState(() => rollOver(loadTabs() ?? initialTabs(), todayKey()))
+  // The current local date. Re-checked every minute and when the window regains
+  // focus, so leaving the app open overnight still rolls Tomorrow into Today.
+  const [today, setToday] = useState(todayKey)
   const [active, setActive] = useState(null)
   const [adding, setAdding] = useState(false)
   const [hovered, setHovered] = useState(null) // tab id, 'add', or null
   const [confirmDelete, setConfirmDelete] = useState(null) // tab pending deletion
   const [pendingImport, setPendingImport] = useState(null) // tabs from a backup file, awaiting OK
   const prevActive = usePrevious(active)
+  const [draggingTab, setDraggingTab] = useState(null) // id of the tab being dragged along the bar
 
   useEffect(() => {
     const onKey = (e) => {
@@ -56,13 +62,27 @@ export default function App() {
 
   useEffect(() => saveTabs(tabs), [tabs])
 
+  useEffect(() => {
+    const check = () => setToday(todayKey())
+    const timer = setInterval(check, 60_000)
+    window.addEventListener('focus', check)
+    document.addEventListener('visibilitychange', check)
+    return () => {
+      clearInterval(timer)
+      window.removeEventListener('focus', check)
+      document.removeEventListener('visibilitychange', check)
+    }
+  }, [])
+
+  useEffect(() => setTabs((t) => rollOver(t, today)), [today])
+
   // Another browser window changed the save: adopt it so neither clobbers the other.
   useEffect(() => {
     const onStorage = (e) => {
       if (e.key !== STORAGE_KEY || !e.newValue) return
       try {
         const next = parseData(JSON.parse(e.newValue))
-        if (next) setTabs(next)
+        if (next) setTabs(rollOver(next, todayKey()))
       } catch {}
     }
     window.addEventListener('storage', onStorage)
@@ -103,15 +123,86 @@ export default function App() {
     height: TAB_H + (hover ? HOVER_LIFT : 0),
   })
   // Mouse only, so a tap on touch screens doesn't leave a tab stuck "hovered".
+  // While a tab is being dragged, it keeps the hover and its neighbours don't take it.
   const hoverProps = (id) => ({
-    onPointerEnter: (e) => e.pointerType === 'mouse' && setHovered(id),
-    onPointerLeave: () => setHovered((h) => (h === id ? null : h)),
+    onPointerEnter: (e) => e.pointerType === 'mouse' && !tabDrag.current && setHovered(id),
+    onPointerLeave: () => !tabDrag.current && setHovered((h) => (h === id ? null : h)),
   })
+
+  // ---- Dragging tabs to reorder them ----
+  // The dragged tab is reordered in `tabs` as it crosses its neighbours' midpoints, so
+  // they slide aside with their usual layout animation. The dragged tab itself opts out
+  // of layout animation and is placed with `tabDragX`, an offset from its current slot.
+  const appRef = useRef(null)
+  const tabDrag = useRef(null) // { id, grab, desiredLeft } while dragging
+  const suppressClick = useRef(false)
+  const tabDragX = useMotionValue(0)
+
+  // Slot geometry in px, mirroring slotLeft/slotWidth above.
+  const slotPx = (count) => {
+    const w = (appRef.current.clientWidth - PLUS_W - (count + 2) * GAP) / count
+    return { w, left: (i) => GAP + i * (w + GAP) }
+  }
+
+  // After each re-render the dragged tab's slot may have moved; re-aim the offset
+  // before paint so it stays glued to the pointer.
+  useLayoutEffect(() => {
+    const d = tabDrag.current
+    if (!d) return
+    const i = tabs.findIndex((t) => t.id === d.id)
+    if (i >= 0) tabDragX.set(d.desiredLeft - slotPx(tabs.length).left(i))
+  }, [tabs])
+
+  const pressTab = (e, id) => {
+    if (e.button !== 0 || tabDrag.current) return
+    const startX = e.clientX
+    const onMove = (ev) => {
+      const count = tabsRef.current.length
+      const { w, left } = slotPx(count)
+      let d = tabDrag.current
+      if (!d) {
+        if (Math.abs(ev.clientX - startX) < 5) return // still a click
+        const i = tabsRef.current.findIndex((t) => t.id === id)
+        d = tabDrag.current = { id, grab: startX - left(i), desiredLeft: left(i) }
+        setDraggingTab(id)
+        setHovered(id)
+        document.body.classList.add('is-dragging')
+      }
+      d.desiredLeft = ev.clientX - d.grab
+      const target = Math.max(0, Math.min(count - 1, Math.round((d.desiredLeft - GAP) / (w + GAP))))
+      const cur = tabsRef.current.findIndex((t) => t.id === id)
+      if (target !== cur) {
+        setTabs((ts) => {
+          const from = ts.findIndex((t) => t.id === id)
+          if (from < 0 || from === target) return ts
+          const next = [...ts]
+          next.splice(target, 0, ...next.splice(from, 1))
+          return next
+        })
+      }
+      tabDragX.set(d.desiredLeft - left(cur))
+    }
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      if (!tabDrag.current) return
+      tabDrag.current = null
+      document.body.classList.remove('is-dragging')
+      // The click that follows this release shouldn't also open/close the tab.
+      suppressClick.current = true
+      setTimeout(() => (suppressClick.current = false), 0)
+      animate(tabDragX, 0, hoverSpring).then(() => setDraggingTab((cur) => (cur === id ? null : cur)))
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
+  const tabsRef = useRef(tabs)
+  tabsRef.current = tabs
 
   return (
     <MotionConfig transition={spring}>
-      <div className="app">
-        <MainContent tabCount={n} />
+      <div className="app" ref={appRef}>
+        <Home tabs={tabs} today={today} bottomSpace={TAB_H + 32} />
 
         {/* Tab backgrounds. Each one is a single element that morphs between its
             resting slot and the full-window frame via a layout animation. The open
@@ -122,10 +213,11 @@ export default function App() {
           const r = open ? 0 : RADIUS
           // Opening/closing gets the big spring; hover nudges get the quick one.
           const toggling = open || tab.id === prevActive
+          const dragged = tab.id === draggingTab
           return (
             <motion.div
               key={tab.id}
-              layout
+              layout={!dragged}
               className="tab-bg"
               initial={{ y: TAB_H }}
               animate={{ y: 0, borderTopLeftRadius: r, borderTopRightRadius: r }}
@@ -133,14 +225,23 @@ export default function App() {
               transition={{ default: spring, layout: toggling ? spring : hoverSpring }}
               style={{
                 background: tab.color,
-                zIndex: open ? 10 : 20,
+                // A dragged tab rises above the label layer (.tab-bar, z 30), carrying its own label.
+                zIndex: open ? 10 : dragged ? 35 : 20,
+                x: dragged && !open ? tabDragX : 0, // an open tab is the frame: it stays put
                 //boxShadow: open ? 'none' : TAB_SHADOW,
                 
                 ...(open
                   ? { left: 0, top: 0, width: '100%', height: '100%' }
                   : restingRect(i, hovered === tab.id)),
               }}
-            />
+            >
+              {dragged && !open && (
+                <div className="tab-bg-label" style={{ height: TAB_H, color: labelColor(tab.color) }}>
+                  {tab.title}
+                  <TodayCount tab={tab} />
+                </div>
+              )}
+            </motion.div>
           )
         })}
         </AnimatePresence>
@@ -183,6 +284,7 @@ export default function App() {
             >
               <Board
                 tab={activeTab}
+                today={today}
                 onUpdateColumns={(fn) => updateColumns(activeTab.id, fn)}
                 onDelete={() => setConfirmDelete(activeTab)}
               />
@@ -195,21 +297,29 @@ export default function App() {
           {tabs.map((tab) => (
             <motion.button
               key={tab.id}
-              layout="position"
+              layout={tab.id === draggingTab ? false : 'position'}
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              className="tab-label"
-              style={{ color: labelColor(tab.color) }}
+              // While dragged, the tab's background shows its label instead (see .tab-bg-label);
+              // .dragging hides this one with `visibility`, which swaps back in the same frame.
+              className={`tab-label${tab.id === draggingTab ? ' dragging' : ''}`}
+              style={{ color: labelColor(tab.color), x: tab.id === draggingTab ? tabDragX : 0 }}
               aria-pressed={tab.id === active}
               {...hoverProps(tab.id)}
-              onClick={() => setActive((cur) => (cur === tab.id ? null : tab.id))}
+              onPointerDown={(e) => pressTab(e, tab.id)}
+              onClick={() => {
+                if (suppressClick.current) return
+                setActive((cur) => (cur === tab.id ? null : tab.id))
+              }}
             >
               {tab.title}
+              <TodayCount tab={tab} />
             </motion.button>
           ))}
           <motion.button
             className="tab-label plus"
-            style={{ flex: `0 0 ${PLUS_W}px` }}
+            // margin-left: auto keeps it at the right end even when there are no tabs.
+            style={{ flex: `0 0 ${PLUS_W}px`, marginLeft: 'auto' }}
             animate={{ opacity: adding ? 0 : 1 }}
             aria-label="Add tab"
             {...hoverProps('add')}
@@ -249,7 +359,8 @@ export default function App() {
               message={`Your ${tabs.length} current tab${tabs.length === 1 ? '' : 's'} will be replaced by the ${pendingImport.length} from the backup.`}
               confirmLabel="Replace"
               onCancel={() => setPendingImport(null)}
-              onConfirm={() => { setActive(null); setTabs(pendingImport); setPendingImport(null) }}
+              // An older backup catches up on the days since it was made.
+              onConfirm={() => { setActive(null); setTabs(rollOver(pendingImport, todayKey())); setPendingImport(null) }}
             />
           )}
         </AnimatePresence>
@@ -451,18 +562,26 @@ function AddTabModal({ onCancel, onAdd, onExport, onImport }) {
   )
 }
 
-function MainContent({ tabCount }) {
+// How many items sit in a tab's Today column, as a small badge beside its title.
+// Hidden at zero; pops when the number changes.
+function TodayCount({ tab }) {
+  const count = tab.columns.find((c) => c.kind === 'today')?.items.length ?? 0
   return (
-    <main className="main" style={{ paddingBottom: TAB_H + 32 }}>
-      <h1>some text or wtvr</h1>
-      <p className="muted">
-        Click a tab below (or press 1–{Math.min(tabCount, 9)}). Esc or click it again to close. Use + to add a tab.
-      </p>
-      <div className="cards">
-        {['Buy milk', 'Water the plants', 'Reply to emails', 'Book dentist'].map((t) => (
-          <div key={t} className="card">{t}</div>
-        ))}
-      </div>
-    </main>
+    <AnimatePresence initial={false}>
+      {count > 0 && (
+        <motion.span
+          className="tab-count"
+          style={{ background: labelColor(tab.color), color: tab.color }}
+          aria-label={`${count} in Today`}
+          initial={{ opacity: 0, scale: 0.5 }}
+          animate={{ opacity: 1, scale: 1 }}
+          exit={{ opacity: 0, scale: 0.5, transition: { duration: 0.15 } }}
+        >
+          <motion.span key={count} initial={{ y: -6, opacity: 0 }} animate={{ y: 0, opacity: 1 }}>
+            {count}
+          </motion.span>
+        </motion.span>
+      )}
+    </AnimatePresence>
   )
 }
